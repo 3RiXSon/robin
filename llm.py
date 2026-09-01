@@ -4,12 +4,7 @@ import openai
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from llm_utils import _common_llm_params, resolve_model_config, get_model_choices
-from config import (
-    OPENAI_API_KEY,
-    ANTHROPIC_API_KEY,
-    GOOGLE_API_KEY,
-    OPENROUTER_API_KEY,
-)
+import config as _runtime_config
 import logging
 
 import warnings
@@ -47,7 +42,7 @@ def get_llm(model_choice):
 
 def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> None:
     """Raise a clear error if the user selects a hosted model without a key."""
-    from config import CUSTOM_API_BASE_URL, CUSTOM_API_KEY
+    from config import CUSTOM_API_BASE_URL
 
     def _require(key_value, env_var, provider_name):
         if key_value:
@@ -60,19 +55,41 @@ def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> Non
     class_name = getattr(llm_class, "__name__", str(llm_class))
 
     if "ChatAnthropic" in class_name:
-        _require(ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY", "Anthropic")
+        _require(
+            getattr(_runtime_config, "ANTHROPIC_API_KEY", None),
+            "ANTHROPIC_API_KEY",
+            "Anthropic",
+        )
     elif "ChatGoogleGenerativeAI" in class_name:
-        _require(GOOGLE_API_KEY, "GOOGLE_API_KEY", "Google Gemini")
+        _require(
+            getattr(_runtime_config, "GOOGLE_API_KEY", None),
+            "GOOGLE_API_KEY",
+            "Google Gemini",
+        )
     elif "ChatOpenAI" in class_name:
-        base_url = (model_params or {}).get("base_url", "").lower()
+        base_url = str((model_params or {}).get("base_url", "")).lower()
         if "openrouter" in base_url:
-            _require(OPENROUTER_API_KEY, "OPENROUTER_API_KEY", "OpenRouter")
+            _require(
+                getattr(_runtime_config, "OPENROUTER_API_KEY", None),
+                "OPENROUTER_API_KEY",
+                "OpenRouter",
+            )
         elif base_url and ("localhost" in base_url or "127.0.0.1" in base_url):
             pass  # local model — no API key required
+        elif (
+            getattr(_runtime_config, "LLAMA_CPP_BASE_URL", None)
+            and base_url
+            and str(getattr(_runtime_config, "LLAMA_CPP_BASE_URL")).lower().rstrip("/") in base_url
+        ):
+            pass  # llama.cpp — local/controlled OpenAI-compatible endpoint
         elif CUSTOM_API_BASE_URL and base_url and CUSTOM_API_BASE_URL.lower().rstrip("/") in base_url:
             pass  # custom provider — API key is optional (some providers don't require one)
         else:
-            _require(OPENAI_API_KEY, "OPENAI_API_KEY", "OpenAI")
+            _require(
+                getattr(_runtime_config, "OPENAI_API_KEY", None),
+                "OPENAI_API_KEY",
+                "OpenAI",
+            )
 
 
 def refine_query(llm, user_input):
@@ -401,7 +418,15 @@ def build_followup_context(query, refined, sources, scraped, summary, char_budge
     if summary:
         parts.append("INVESTIGATION SUMMARY:\n" + str(summary))
     if scraped:
-        raw = scraped if isinstance(scraped, str) else "\n\n".join(str(x) for x in scraped)
+        if isinstance(scraped, str):
+            raw = scraped
+        elif isinstance(scraped, dict):
+            # scrape_multiple returns {url: extracted_text}; retain both the
+            # source URL and its evidence instead of accidentally joining only
+            # dictionary keys.
+            raw = "\n\n".join(f"SOURCE: {url}\n{text}" for url, text in scraped.items())
+        else:
+            raw = "\n\n".join(str(x) for x in scraped)
         if len(raw) > char_budget:
             raw = raw[:char_budget] + "\n\n[...truncated...]"
         parts.append("RAW SCRAPED CONTENT (may be truncated):\n" + raw)

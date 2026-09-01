@@ -184,10 +184,22 @@ def _normalize_model_name(name: str) -> str:
     return name.strip().lower()
 
 
+def _runtime_config(name: str, fallback=None):
+    """Read configuration at call time so the no-code UI can update providers.
+
+    The original project imported environment values once at module import. That
+    made credentials entered in the Streamlit settings panel invisible until a
+    full process restart. Keeping this tiny accessor here preserves the existing
+    API while allowing runtime-only configuration.
+    """
+    return getattr(config, name, fallback)
+
+
 def _get_ollama_base_url() -> Optional[str]:
-    if not OLLAMA_BASE_URL:
+    base_url = _runtime_config("OLLAMA_BASE_URL")
+    if not base_url:
         return None
-    return OLLAMA_BASE_URL.rstrip("/") + "/"
+    return str(base_url).rstrip("/") + "/"
 
 
 def fetch_ollama_models() -> List[str]:
@@ -211,10 +223,11 @@ def fetch_ollama_models() -> List[str]:
         return available
     except (requests.RequestException, ValueError):
         import logging
-        if OLLAMA_BASE_URL and ("localhost" in OLLAMA_BASE_URL.lower() or "127.0.0.1" in OLLAMA_BASE_URL.lower()):
+        current_ollama_url = _runtime_config("OLLAMA_BASE_URL")
+        if current_ollama_url and ("localhost" in str(current_ollama_url).lower() or "127.0.0.1" in str(current_ollama_url).lower()):
             logging.warning(
                 "Ollama unreachable at %s. If running Robin in Docker, use "
-                "http://host.docker.internal:<port> instead of localhost.", OLLAMA_BASE_URL
+                "http://host.docker.internal:<port> instead of localhost.", current_ollama_url
             )
         return []
 
@@ -225,12 +238,18 @@ def fetch_llama_cpp_models() -> List[str]:
     Retrieve available models from an OpenAI-compatible llama.cpp server.
     Uses /v1/models.
     """
-    if not LLAMA_CPP_BASE_URL:
+    llama_base_url = _runtime_config("LLAMA_CPP_BASE_URL")
+    if not llama_base_url:
         return []
 
-    base = LLAMA_CPP_BASE_URL.rstrip("/")
+    base = str(llama_base_url).rstrip("/")
+    api_base = base[:-3] if base.lower().endswith("/v1") else base
     try:
-        resp = requests.get(f"{base}/v1/models", timeout=3)
+        headers = {}
+        api_key = _runtime_config("OPENAI_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = requests.get(f"{api_base}/v1/models", headers=headers, timeout=3)
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [m["id"] for m in data if "id" in m]
@@ -240,13 +259,18 @@ def fetch_llama_cpp_models() -> List[str]:
 
 def fetch_custom_api_models() -> List[str]:
     """Retrieve models from any OpenAI-compatible API endpoint."""
-    if not config.CUSTOM_API_BASE_URL:
+    custom_base_url = _runtime_config("CUSTOM_API_BASE_URL")
+    if not custom_base_url:
         return []
-    base = config.CUSTOM_API_BASE_URL.rstrip("/")
-    if not base.endswith("/v1"):
+    base = str(custom_base_url).rstrip("/")
+    if not base.lower().endswith("/v1"):
         base += "/v1"
     try:
-        resp = requests.get(f"{base}/models", timeout=3)
+        headers = {}
+        api_key = _runtime_config("CUSTOM_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        resp = requests.get(f"{base}/models", headers=headers, timeout=3)
         resp.raise_for_status()
         return [m["id"] for m in resp.json().get("data", []) if "id" in m]
     except (requests.RequestException, ValueError, KeyError):
@@ -265,10 +289,10 @@ def get_model_choices() -> List[str]:
     """
     gated_base_models: List[str] = []
 
-    openai_ok = _is_set(OPENAI_API_KEY)
-    anthropic_ok = _is_set(ANTHROPIC_API_KEY)
-    google_ok = _is_set(GOOGLE_API_KEY)
-    openrouter_ok = _is_set(OPENROUTER_API_KEY) and _is_set(OPENROUTER_BASE_URL)
+    openai_ok = _is_set(_runtime_config("OPENAI_API_KEY"))
+    anthropic_ok = _is_set(_runtime_config("ANTHROPIC_API_KEY"))
+    google_ok = _is_set(_runtime_config("GOOGLE_API_KEY"))
+    openrouter_ok = _is_set(_runtime_config("OPENROUTER_API_KEY")) and _is_set(_runtime_config("OPENROUTER_BASE_URL"))
 
     for k, cfg in _llm_config_map.items():
         cls = cfg.get("class")
@@ -313,8 +337,10 @@ def get_model_choices() -> List[str]:
     dynamic_models += fetch_custom_api_models()
 
     # Manual model from sidebar — add it if not already discovered
-    if config.CUSTOM_API_MODEL and config.CUSTOM_API_MODEL.strip():
-        manual = config.CUSTOM_API_MODEL.strip()
+    custom_model_value = _runtime_config("CUSTOM_API_MODEL")
+    custom_base_value = _runtime_config("CUSTOM_API_BASE_URL")
+    if custom_base_value and custom_model_value and str(custom_model_value).strip():
+        manual = str(custom_model_value).strip()
         if _normalize_model_name(manual) not in {_normalize_model_name(m) for m in dynamic_models}:
             dynamic_models.append(manual)
 
@@ -341,41 +367,55 @@ def resolve_model_config(model_choice: str):
     model_choice_lower = _normalize_model_name(model_choice)
     cfg = _llm_config_map.get(model_choice_lower)
     if cfg:
-        return cfg
+        # Copy constructor parameters and refresh runtime credentials/URLs. This
+        # is what makes provider keys entered in the UI usable immediately.
+        resolved = {
+            "class": cfg["class"],
+            "constructor_params": dict(cfg.get("constructor_params", {}) or {}),
+        }
+        params = resolved["constructor_params"]
+        if "openrouter" in model_choice_lower:
+            params["base_url"] = _runtime_config("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL
+            params["api_key"] = _runtime_config("OPENROUTER_API_KEY") or OPENROUTER_API_KEY
+        elif resolved["class"] is ChatGoogleGenerativeAI:
+            params["google_api_key"] = _runtime_config("GOOGLE_API_KEY") or GOOGLE_API_KEY
+        return resolved
 
     # llama.cpp (OpenAI-compatible)
     for llama_model in fetch_llama_cpp_models():
         if _normalize_model_name(llama_model) == model_choice_lower:
-            base = (LLAMA_CPP_BASE_URL or "").rstrip("/")
-            if not base.endswith("/v1"):
+            base = str(_runtime_config("LLAMA_CPP_BASE_URL") or "").rstrip("/")
+            if not base.lower().endswith("/v1"):
                 base += "/v1"
             return {
                 "class": ChatOpenAI,
                 "constructor_params": {
                     "model_name": llama_model,
                     "base_url": base,
-                    "api_key": OPENAI_API_KEY or "sk-local",
+                    "api_key": _runtime_config("OPENAI_API_KEY") or "sk-local",
                     "streaming": False,
                 },
             }
 
     # Custom OpenAI-compatible API — manual model name or auto-discovered
     custom_candidates = list(fetch_custom_api_models())
-    if config.CUSTOM_API_MODEL and config.CUSTOM_API_MODEL.strip():
-        manual = config.CUSTOM_API_MODEL.strip()
+    custom_model_value = _runtime_config("CUSTOM_API_MODEL")
+    custom_base_value = _runtime_config("CUSTOM_API_BASE_URL")
+    if custom_base_value and custom_model_value and str(custom_model_value).strip():
+        manual = str(custom_model_value).strip()
         if _normalize_model_name(manual) not in {_normalize_model_name(m) for m in custom_candidates}:
             custom_candidates.append(manual)
     for custom_model in custom_candidates:
         if _normalize_model_name(custom_model) == model_choice_lower:
-            base = (config.CUSTOM_API_BASE_URL or "").rstrip("/")
-            if not base.endswith("/v1"):
+            base = str(_runtime_config("CUSTOM_API_BASE_URL") or "").rstrip("/")
+            if not base.lower().endswith("/v1"):
                 base += "/v1"
             return {
                 "class": ChatOpenAI,
                 "constructor_params": {
                     "model_name": custom_model,
                     "base_url": base,
-                    "api_key": config.CUSTOM_API_KEY or "sk-custom",
+                    "api_key": _runtime_config("CUSTOM_API_KEY") or "sk-custom",
                     "streaming": False,
                 },
             }
@@ -384,7 +424,7 @@ def resolve_model_config(model_choice: str):
         if _normalize_model_name(ollama_model) == model_choice_lower:
             return {
                 "class": ChatOllama,
-                "constructor_params": {"model": ollama_model, "base_url": OLLAMA_BASE_URL},
+                "constructor_params": {"model": ollama_model, "base_url": _runtime_config("OLLAMA_BASE_URL")},
             }
 
     return None

@@ -88,7 +88,8 @@ def scrape_single(url_data, rotate=False, rotate_interval=5, control_port=9051, 
 
     parsed_url = urlparse(url)
     if parsed_url.scheme not in ("http", "https"):
-        return url, title
+        # Never return non-web schemes to callers as scrapeable evidence.
+        return "", title
 
     use_tor = (urlparse(url).hostname or "").lower().endswith(".onion")
 
