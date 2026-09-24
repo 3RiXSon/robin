@@ -1,11 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
+from contextvars import Context
 
 import config
 from llm import build_followup_context
-from llm_utils import get_model_choices, resolve_model_config
+from llm_utils import fetch_llama_cpp_models, fetch_custom_api_models, get_model_choices, resolve_model_config, set_provider_settings
 from search import fetch_search_results
 from scrape import scrape_multiple
 
@@ -25,6 +26,59 @@ class _FakeSession:
 
 
 class RobinCoreTests(unittest.TestCase):
+    def setUp(self):
+        set_provider_settings(None)
+
+    def tearDown(self):
+        set_provider_settings(None)
+
+    def test_llama_discovery_never_sends_openai_credential(self):
+        response = Mock()
+        response.json.return_value = {"data": [{"id": "local-model"}]}
+        with patch.object(config, "LLAMA_CPP_BASE_URL", "https://llama.example/v1/"), patch.object(
+            config, "OPENAI_API_KEY", "private-openai-key"
+        ), patch("llm_utils.requests.get", return_value=response) as get:
+            self.assertEqual(fetch_llama_cpp_models(), ["local-model"])
+        get.assert_called_once_with("https://llama.example/v1/models", timeout=3)
+
+    def test_llama_inference_uses_only_placeholder_key(self):
+        response = Mock()
+        response.json.return_value = {"data": [{"id": "local-model"}]}
+        with patch.object(config, "LLAMA_CPP_BASE_URL", "https://llama.example"), patch.object(
+            config, "OPENAI_API_KEY", "private-openai-key"
+        ), patch("llm_utils.requests.get", return_value=response):
+            params = resolve_model_config("local-model")["constructor_params"]
+        self.assertEqual(params["base_url"], "https://llama.example/v1")
+        self.assertEqual(params["api_key"], "sk-local")
+        self.assertNotIn("private-openai-key", str(params))
+
+    def test_custom_discovery_uses_only_its_own_key(self):
+        response = Mock()
+        response.json.return_value = {"data": [{"id": "custom-model"}]}
+        with patch.object(config, "CUSTOM_API_BASE_URL", "https://custom.example"), patch.object(
+            config, "CUSTOM_API_KEY", "custom-key"
+        ), patch.object(config, "OPENAI_API_KEY", "private-openai-key"), patch(
+            "llm_utils.requests.get", return_value=response
+        ) as get:
+            self.assertEqual(fetch_custom_api_models(), ["custom-model"])
+        get.assert_called_once_with(
+            "https://custom.example/v1/models",
+            headers={"Authorization": "Bearer custom-key"},
+            timeout=3,
+        )
+
+    def test_provider_settings_do_not_cross_sessions(self):
+        def resolve_with(key):
+            set_provider_settings({"OPENAI_API_KEY": key})
+            return resolve_model_config("gpt-5-mini")["constructor_params"]["api_key"]
+
+        first = Context()
+        second = Context()
+        self.assertEqual(first.run(resolve_with, "first-key"), "first-key")
+        self.assertEqual(second.run(resolve_with, "second-key"), "second-key")
+        self.assertEqual(first.run(lambda: resolve_model_config("gpt-5-mini")["constructor_params"]["api_key"]), "first-key")
+        self.assertEqual(second.run(lambda: resolve_model_config("gpt-5-mini")["constructor_params"]["api_key"]), "second-key")
+
     def test_followup_context_keeps_scraped_dictionary_values(self):
         context = build_followup_context(
             "actor alias",
@@ -51,27 +105,20 @@ class RobinCoreTests(unittest.TestCase):
         self.assertEqual(scrape_multiple("not a list"), {})
 
     def test_runtime_custom_provider_can_supply_a_model_without_restart(self):
-        original = {
-            "CUSTOM_API_BASE_URL": config.CUSTOM_API_BASE_URL,
-            "CUSTOM_API_KEY": config.CUSTOM_API_KEY,
-            "CUSTOM_API_MODEL": config.CUSTOM_API_MODEL,
-        }
-        try:
-            config.CUSTOM_API_BASE_URL = "https://provider.example/v1"
-            config.CUSTOM_API_KEY = "session-only-key"
-            config.CUSTOM_API_MODEL = "session-model"
-            with patch("llm_utils.fetch_ollama_models", return_value=[]), patch(
-                "llm_utils.fetch_llama_cpp_models", return_value=[]
-            ), patch("llm_utils.fetch_custom_api_models", return_value=[]):
-                choices = get_model_choices()
-                resolved = resolve_model_config("SESSION-MODEL")
-            self.assertIn("session-model", choices)
-            self.assertIsNotNone(resolved)
-            self.assertEqual(resolved["constructor_params"]["model_name"], "session-model")
-            self.assertEqual(resolved["constructor_params"]["api_key"], "session-only-key")
-        finally:
-            for name, value in original.items():
-                setattr(config, name, value)
+        set_provider_settings({
+            "CUSTOM_API_BASE_URL": "https://provider.example/v1",
+            "CUSTOM_API_KEY": "session-only-key",
+            "CUSTOM_API_MODEL": "session-model",
+        })
+        with patch("llm_utils.fetch_ollama_models", return_value=[]), patch(
+            "llm_utils.fetch_llama_cpp_models", return_value=[]
+        ), patch("llm_utils.fetch_custom_api_models", return_value=[]):
+            choices = get_model_choices()
+            resolved = resolve_model_config("SESSION-MODEL")
+        self.assertIn("session-model", choices)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["constructor_params"]["model_name"], "session-model")
+        self.assertEqual(resolved["constructor_params"]["api_key"], "session-only-key")
 
     def test_local_report_archive_round_trips_and_exports(self):
         # Importing ui is intentionally avoided at module load so the core tests

@@ -36,6 +36,7 @@ from llm_utils import (
     BufferedStreamingHandler,
     get_model_choices,
     get_model_display_names,
+    set_provider_settings,
 )
 from scrape import scrape_multiple
 from search import SEARCH_ENGINES, get_search_results
@@ -289,15 +290,11 @@ def _seed_provider_state() -> None:
 
 
 def _sync_runtime_config() -> None:
-    """Apply sidebar values to this process without writing secrets to disk."""
-    for config_name, (state_key, _label) in _PROVIDER_FIELDS.items():
-        value = _clean_text(st.session_state.get(state_key, "")) or None
-        setattr(_robin_cfg, config_name, value)
-        # Provider SDKs commonly read these variables during client creation.
-        if value:
-            os.environ[config_name] = value
-        else:
-            os.environ.pop(config_name, None)
+    """Make this session's provider settings available to model resolution."""
+    set_provider_settings({
+        config_name: _clean_text(st.session_state.get(state_key, "")) or None
+        for config_name, (state_key, _label) in _PROVIDER_FIELDS.items()
+    })
 
 
 def _provider_badge(name: str, value: Any, cloud: bool) -> str:
@@ -801,7 +798,7 @@ for provider_name, config_name, is_cloud in (
     ("llama.cpp", "LLAMA_CPP_BASE_URL", False),
     ("Custom API", "CUSTOM_API_BASE_URL", False),
 ):
-    st.sidebar.caption(_provider_badge(provider_name, getattr(_robin_cfg, config_name, None), is_cloud))
+    st.sidebar.caption(_provider_badge(provider_name, st.session_state.get(_PROVIDER_FIELDS[config_name][0]), is_cloud))
 
 with st.sidebar.expander("🎛️ Investigation controls", expanded=True):
     threads = st.slider("Concurrent workers", 1, 16, 4, key="thread_slider", help="Parallel search and page-fetch workers.")

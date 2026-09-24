@@ -1,4 +1,5 @@
 import config
+from contextvars import ContextVar
 import requests
 from urllib.parse import urljoin
 from langchain_openai import ChatOpenAI
@@ -184,14 +185,19 @@ def _normalize_model_name(name: str) -> str:
     return name.strip().lower()
 
 
-def _runtime_config(name: str, fallback=None):
-    """Read configuration at call time so the no-code UI can update providers.
+_provider_settings = ContextVar("robin_provider_settings", default=None)
 
-    The original project imported environment values once at module import. That
-    made credentials entered in the Streamlit settings panel invisible until a
-    full process restart. Keeping this tiny accessor here preserves the existing
-    API while allowing runtime-only configuration.
-    """
+
+def set_provider_settings(settings):
+    """Set provider values for the current Streamlit script context."""
+    _provider_settings.set(None if settings is None else dict(settings))
+
+
+def _runtime_config(name: str, fallback=None):
+    """Use this session's provider values, falling back to startup configuration."""
+    settings = _provider_settings.get()
+    if settings is not None and name in settings:
+        return settings[name]
     return getattr(config, name, fallback)
 
 
@@ -245,11 +251,7 @@ def fetch_llama_cpp_models() -> List[str]:
     base = str(llama_base_url).rstrip("/")
     api_base = base[:-3] if base.lower().endswith("/v1") else base
     try:
-        headers = {}
-        api_key = _runtime_config("OPENAI_API_KEY")
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        resp = requests.get(f"{api_base}/v1/models", headers=headers, timeout=3)
+        resp = requests.get(f"{api_base}/v1/models", timeout=3)
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [m["id"] for m in data if "id" in m]
@@ -376,9 +378,13 @@ def resolve_model_config(model_choice: str):
         params = resolved["constructor_params"]
         if "openrouter" in model_choice_lower:
             params["base_url"] = _runtime_config("OPENROUTER_BASE_URL") or OPENROUTER_BASE_URL
-            params["api_key"] = _runtime_config("OPENROUTER_API_KEY") or OPENROUTER_API_KEY
+            params["api_key"] = _runtime_config("OPENROUTER_API_KEY")
         elif resolved["class"] is ChatGoogleGenerativeAI:
-            params["google_api_key"] = _runtime_config("GOOGLE_API_KEY") or GOOGLE_API_KEY
+            params["google_api_key"] = _runtime_config("GOOGLE_API_KEY")
+        elif resolved["class"] is ChatAnthropic:
+            params["api_key"] = _runtime_config("ANTHROPIC_API_KEY")
+        elif resolved["class"] is ChatOpenAI:
+            params["api_key"] = _runtime_config("OPENAI_API_KEY")
         return resolved
 
     # llama.cpp (OpenAI-compatible)
@@ -392,7 +398,7 @@ def resolve_model_config(model_choice: str):
                 "constructor_params": {
                     "model_name": llama_model,
                     "base_url": base,
-                    "api_key": _runtime_config("OPENAI_API_KEY") or "sk-local",
+                    "api_key": "sk-local",
                     "streaming": False,
                 },
             }

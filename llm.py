@@ -3,8 +3,7 @@ import json
 import openai
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
-from llm_utils import _common_llm_params, resolve_model_config, get_model_choices
-import config as _runtime_config
+from llm_utils import _common_llm_params, resolve_model_config, get_model_choices, _runtime_config
 import logging
 
 import warnings
@@ -42,8 +41,6 @@ def get_llm(model_choice):
 
 def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> None:
     """Raise a clear error if the user selects a hosted model without a key."""
-    from config import CUSTOM_API_BASE_URL
-
     def _require(key_value, env_var, provider_name):
         if key_value:
             return
@@ -56,13 +53,13 @@ def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> Non
 
     if "ChatAnthropic" in class_name:
         _require(
-            getattr(_runtime_config, "ANTHROPIC_API_KEY", None),
+            _runtime_config("ANTHROPIC_API_KEY"),
             "ANTHROPIC_API_KEY",
             "Anthropic",
         )
     elif "ChatGoogleGenerativeAI" in class_name:
         _require(
-            getattr(_runtime_config, "GOOGLE_API_KEY", None),
+            _runtime_config("GOOGLE_API_KEY"),
             "GOOGLE_API_KEY",
             "Google Gemini",
         )
@@ -70,23 +67,23 @@ def _ensure_credentials(model_choice: str, llm_class, model_params: dict) -> Non
         base_url = str((model_params or {}).get("base_url", "")).lower()
         if "openrouter" in base_url:
             _require(
-                getattr(_runtime_config, "OPENROUTER_API_KEY", None),
+                _runtime_config("OPENROUTER_API_KEY"),
                 "OPENROUTER_API_KEY",
                 "OpenRouter",
             )
         elif base_url and ("localhost" in base_url or "127.0.0.1" in base_url):
             pass  # local model — no API key required
         elif (
-            getattr(_runtime_config, "LLAMA_CPP_BASE_URL", None)
+            _runtime_config("LLAMA_CPP_BASE_URL")
             and base_url
-            and str(getattr(_runtime_config, "LLAMA_CPP_BASE_URL")).lower().rstrip("/") in base_url
+            and str(_runtime_config("LLAMA_CPP_BASE_URL")).lower().rstrip("/") in base_url
         ):
             pass  # llama.cpp — local/controlled OpenAI-compatible endpoint
-        elif CUSTOM_API_BASE_URL and base_url and CUSTOM_API_BASE_URL.lower().rstrip("/") in base_url:
+        elif _runtime_config("CUSTOM_API_BASE_URL") and base_url and str(_runtime_config("CUSTOM_API_BASE_URL")).lower().rstrip("/") in base_url:
             pass  # custom provider — API key is optional (some providers don't require one)
         else:
             _require(
-                getattr(_runtime_config, "OPENAI_API_KEY", None),
+                _runtime_config("OPENAI_API_KEY"),
                 "OPENAI_API_KEY",
                 "OpenAI",
             )
