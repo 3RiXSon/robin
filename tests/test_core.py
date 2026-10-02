@@ -145,6 +145,28 @@ class RobinCoreTests(unittest.TestCase):
                 self.assertIn("evidence text", ui.build_json_report(normalized))
                 self.assertIn("## Findings", ui.build_markdown_report(normalized))
 
+    def test_pivot_run_requires_lawful_use_acknowledgement(self):
+        import ui
+
+        self.assertFalse(
+            ui._should_run_investigation(
+                "pivot query",
+                "session-model",
+                False,
+                "pivot query",
+                False,
+            )
+        )
+        self.assertTrue(
+            ui._should_run_investigation(
+                "pivot query",
+                "session-model",
+                False,
+                "pivot query",
+                True,
+            )
+        )
+
     def test_aaa_ui_starts_without_provider_configuration(self):
         from streamlit.testing.v1 import AppTest
 
