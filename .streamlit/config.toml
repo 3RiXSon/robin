@@ -1,7 +1,17 @@
 [server]
 runOnSave = true
+headless = true
+address = "0.0.0.0"
+enableCORS = false
+enableXsrfProtection = true
+
+[client]
+showErrorDetails = "type"
 
 [theme]
-base="dark"
-backgroundColor="#000000"
-secondaryBackgroundColor="#222222"
+base = "dark"
+primaryColor = "#a78bfa"
+backgroundColor = "#070912"
+secondaryBackgroundColor = "#0f1422"
+textColor = "#f4f7fb"
+font = "sans serif"

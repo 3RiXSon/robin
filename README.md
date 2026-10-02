@@ -28,6 +28,18 @@
 - 🐳 **Docker-Ready** – Recommended Docker deployment for clean, isolated usage.
 - 📝 **Custom Reporting** – Save investigation output to file for reporting or further analysis.
 - 🧩 **Extensible** – Easy to plug in new search engines, models, or output formats.
+- 📱 **Mobile-friendly workspace** – Responsive controls, compact source cards, and touch-friendly actions work on phones and tablets.
+- 🔐 **No-code provider setup** – Enter provider credentials or local endpoints in the sidebar; values stay in the current Streamlit session and are not written to investigation files.
+- 📄 **Evidence review** – Inspect extracted text per source and choose whether raw evidence is archived locally.
+- 🩺 **Built-in health checks** – Test the selected LLM, Tor proxy, and all configured search indexes before running a case.
+
+### Guided workflow
+
+1. Open Robin and expand **AI provider setup** in the sidebar. Enter an OpenAI, Anthropic, Google, or OpenRouter key, or provide an Ollama, llama.cpp, or other OpenAI-compatible endpoint. No Python or `.env` editing is required.
+2. Select a research domain and optional custom focus. Confirm that the work is authorized, then enter a question in the search bar.
+3. Robin refines the query, searches the configured indexes through Tor, ranks results, extracts readable page text, and streams a grounded Markdown report.
+4. Review **Findings**, **Sources**, **Evidence**, and **Notes**. Ask grounded follow-ups, use a suggested pivot to start a related case, or download Markdown/JSON.
+5. Reopen saved cases from **Past investigations**. Raw page text is saved only when **Save raw evidence locally** is enabled.
 
 ---
 
@@ -43,11 +55,11 @@
 > The tool needs Tor to do the searches. You can install Tor using `apt install tor` on Linux/Windows(WSL) or `brew install tor` on Mac. Once installed, confirm if Tor is running in the background.
 
 > [!TIP]
-> You can provide your LLM of choice API key by either creating .env file (refer to sample env file in the repo) or by setting env variables in PATH.
+> Robin can be configured entirely from the sidebar. Enter your provider key or local endpoint under **AI provider setup**; credentials are kept in the current app session and are not written to saved investigations. Environment variables and `.env` remain supported for Docker/automated deployments (see `.env.example`).
 >
-> For Ollama, provide `http://host.docker.internal:11434` as `OLLAMA_BASE_URL` in your env if running using docker method or `http://127.0.0.1:11434` for other methods. You might need to serve Ollama on 0.0.0.0 depending on your OS. You can do by running `OLLAMA_HOST=0.0.0.0 ollama serve &` in your terminal.
+> For Ollama, provide `http://host.docker.internal:11434` as the URL when running Robin in Docker, or `http://127.0.0.1:11434` for a local Python run. You might need to serve Ollama on `0.0.0.0` depending on your OS: `OLLAMA_HOST=0.0.0.0 ollama serve &`.
 >
-> For any other OpenAI-compatible provider (LM Studio, llama.cpp, Groq, etc.), use the **🔌 Custom API Provider** expander in the sidebar — no `.env` changes required. Enter the base URL, an optional API key, and optionally a model name if the provider doesn't expose `/v1/models` for auto-discovery.
+> For any other OpenAI-compatible provider (LM Studio, llama.cpp, Groq, etc.), use **Custom API base URL** in the sidebar. Enter the base URL, an optional API key, and optionally a model name if the provider doesn't expose `/v1/models` for auto-discovery.
 
 ### Docker [Recommended]
 
@@ -85,6 +97,7 @@ docker run --rm \
 
 ```bash
 pip install -r requirements.txt
+python -m unittest discover -s tests -v
 streamlit run ui.py
 ```
 

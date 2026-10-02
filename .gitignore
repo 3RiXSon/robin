@@ -127,6 +127,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Local Robin investigation archive (may contain sensitive evidence)
+investigations/
+
 # Environments
 .env
 .venv

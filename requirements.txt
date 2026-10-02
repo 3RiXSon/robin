@@ -1,7 +1,7 @@
 bs4
 pysocks
 requests
-streamlit
+streamlit>=1.37.0
 python-dotenv
 langchain-openai
 langchain-ollama

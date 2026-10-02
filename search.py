@@ -2,6 +2,7 @@ import requests
 import random, re
 import json
 import os
+from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
@@ -63,7 +64,9 @@ def get_tor_session():
     return session
 
 def fetch_search_results(endpoint, query):
-    url = endpoint.format(query=query)
+    # Encode operator input before inserting it into an index URL. This keeps
+    # ampersands, slashes, and other characters from changing the request path.
+    url = endpoint.format(query=quote_plus(str(query)))
     headers = {"User-Agent": random.choice(USER_AGENTS)}
     session = get_tor_session()
     
