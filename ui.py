@@ -66,6 +66,22 @@ def _clean_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _should_run_investigation(
+    active_query: str,
+    model: Optional[str],
+    run_button: bool,
+    pivot_query: Optional[str],
+    acknowledged: bool,
+) -> bool:
+    """Allow live runs only after the lawful-use acknowledgement."""
+    return (
+        bool(active_query)
+        and bool(model)
+        and bool(acknowledged)
+        and (bool(run_button) or pivot_query is not None)
+    )
+
+
 def _as_nonnegative_int(value: Any, fallback: int = 0) -> int:
     try:
         return max(0, int(value))
@@ -949,7 +965,7 @@ if not st.session_state.get("active_investigation"):
 # the same visible query bar and launch from a follow-up button.
 pivot_query = st.session_state.pop("pivot_query", None)
 active_query = _clean_text(pivot_query or query)
-do_run = bool(active_query) and bool(model) and (bool(run_button) or pivot_query is not None)
+do_run = _should_run_investigation(active_query, model, run_button, pivot_query, acknowledged)
 
 if do_run:
     # Start a fresh case while retaining the operator's provider/settings state.
