@@ -120,6 +120,75 @@ class RobinCoreTests(unittest.TestCase):
         self.assertEqual(resolved["constructor_params"]["model_name"], "session-model")
         self.assertEqual(resolved["constructor_params"]["api_key"], "session-only-key")
 
+    def test_colliding_custom_model_gets_prefixed_and_both_selectable(self):
+        """A custom endpoint model named gpt-4.1 must not shadow the built-in OpenAI gpt-4.1."""
+        from llm_utils import get_model_display_names
+
+        set_provider_settings({
+            "OPENAI_API_KEY": "openai-key",
+            "CUSTOM_API_BASE_URL": "https://custom.example/v1",
+            "CUSTOM_API_KEY": "custom-key",
+        })
+        with patch("llm_utils.fetch_ollama_models", return_value=[]), patch(
+            "llm_utils.fetch_llama_cpp_models", return_value=[]
+        ), patch("llm_utils.fetch_custom_api_models", return_value=["gpt-4.1"]):
+            choices = get_model_choices()
+            display_names = get_model_display_names(choices)
+        # Both should be present — built-in and prefixed custom
+        self.assertIn("gpt-4.1", choices)
+        self.assertIn("custom:gpt-4.1", choices)
+        # Display names should clearly disambiguate
+        self.assertEqual(display_names["gpt-4.1"], "[openai] gpt-4.1")
+        self.assertEqual(display_names["custom:gpt-4.1"], "[custom] gpt-4.1")
+
+    def test_colliding_custom_model_resolves_to_custom_endpoint(self):
+        """Selecting 'custom:gpt-4.1' must use CUSTOM_API_BASE_URL, not OpenAI."""
+        set_provider_settings({
+            "OPENAI_API_KEY": "openai-key",
+            "CUSTOM_API_BASE_URL": "https://custom.example",
+            "CUSTOM_API_KEY": "custom-key",
+        })
+        with patch("llm_utils.fetch_ollama_models", return_value=[]), patch(
+            "llm_utils.fetch_llama_cpp_models", return_value=[]
+        ), patch("llm_utils.fetch_custom_api_models", return_value=["gpt-4.1"]):
+            # Prefixed model should resolve to custom endpoint
+            custom_resolved = resolve_model_config("custom:gpt-4.1")
+            # Non-prefixed should resolve to built-in OpenAI
+            builtin_resolved = resolve_model_config("gpt-4.1")
+
+        # Custom resolution
+        self.assertIsNotNone(custom_resolved)
+        self.assertEqual(custom_resolved["constructor_params"]["model_name"], "gpt-4.1")
+        self.assertEqual(custom_resolved["constructor_params"]["base_url"], "https://custom.example/v1")
+        self.assertEqual(custom_resolved["constructor_params"]["api_key"], "custom-key")
+
+        # Built-in resolution
+        self.assertIsNotNone(builtin_resolved)
+        self.assertEqual(builtin_resolved["constructor_params"]["model_name"], "gpt-4.1")
+        self.assertNotIn("base_url", builtin_resolved["constructor_params"])
+        self.assertEqual(builtin_resolved["constructor_params"]["api_key"], "openai-key")
+
+    def test_display_names_disambiguate_colliding_models(self):
+        """Display names must clearly differentiate providers for same model name."""
+        from llm_utils import get_model_display_names
+
+        set_provider_settings({
+            "OPENAI_API_KEY": "openai-key",
+            "CUSTOM_API_BASE_URL": "https://custom.example/v1",
+            "OLLAMA_BASE_URL": "http://localhost:11434",
+        })
+        with patch("llm_utils.fetch_ollama_models", return_value=["gpt-4.1", "llama3"]), patch(
+            "llm_utils.fetch_llama_cpp_models", return_value=[]
+        ), patch("llm_utils.fetch_custom_api_models", return_value=["gpt-4.1"]):
+            choices = get_model_choices()
+            display_names = get_model_display_names(choices)
+        # All three gpt-4.1 variants should have distinct display names
+        self.assertIn("[openai] gpt-4.1", display_names.values())
+        self.assertIn("[custom] gpt-4.1", display_names.values())
+        self.assertIn("[ollama] gpt-4.1", display_names.values())
+        # Non-colliding model should have simple display
+        self.assertEqual(display_names.get("llama3"), "[ollama] llama3")
+
     def test_local_report_archive_round_trips_and_exports(self):
         # Importing ui is intentionally avoided at module load so the core tests
         # stay lightweight; the Streamlit smoke test below covers its startup.

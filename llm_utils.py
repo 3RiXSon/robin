@@ -283,11 +283,29 @@ def _is_set(v: Optional[str]) -> bool:
     return bool(v and str(v).strip() and "your_" not in str(v))
 
 
+# Provider prefixes for disambiguating colliding model names
+_PROVIDER_PREFIX_OLLAMA = "ollama:"
+_PROVIDER_PREFIX_LLAMA_CPP = "llama.cpp:"
+_PROVIDER_PREFIX_CUSTOM = "custom:"
+
+
+def _strip_provider_prefix(model_choice: str) -> tuple:
+    """Return (provider_prefix, raw_model_name) from a possibly-prefixed model choice."""
+    model_choice = model_choice.strip()
+    for prefix in (_PROVIDER_PREFIX_CUSTOM, _PROVIDER_PREFIX_LLAMA_CPP, _PROVIDER_PREFIX_OLLAMA):
+        if model_choice.lower().startswith(prefix):
+            return prefix, model_choice[len(prefix):]
+    return "", model_choice
+
+
 # Changed it so the GUI only loaded available models
 def get_model_choices() -> List[str]:
     """
     Combine configured cloud models with locally available Ollama models.
     Cloud models are shown only if required API keys are present.
+    
+    Dynamic models (ollama, llama.cpp, custom) that collide with built-in names
+    are prefixed with their provider (e.g., 'custom:gpt-4.1') to preserve identity.
     """
     gated_base_models: List[str] = []
 
@@ -327,30 +345,60 @@ def get_model_choices() -> List[str]:
         # Anything else: keep
         gated_base_models.append(k)
 
-    # Local Models
-    dynamic_models = []
+    # Build a set of normalized built-in model names for collision detection
+    builtin_normalized = {_normalize_model_name(m) for m in gated_base_models}
+
+    # Collect dynamic models with their provider prefix
+    dynamic_models: List[str] = []
 
     # Dynamic local models via Ollama-style API (/api/tags)
-    dynamic_models += fetch_ollama_models()
+    for m in fetch_ollama_models():
+        if _normalize_model_name(m) in builtin_normalized:
+            dynamic_models.append(f"{_PROVIDER_PREFIX_OLLAMA}{m}")
+        else:
+            dynamic_models.append(m)
 
     # Dynamic local models via llama.cpp which uses OpenAI style API
-    dynamic_models += fetch_llama_cpp_models()
+    for m in fetch_llama_cpp_models():
+        if _normalize_model_name(m) in builtin_normalized:
+            dynamic_models.append(f"{_PROVIDER_PREFIX_LLAMA_CPP}{m}")
+        else:
+            dynamic_models.append(m)
 
-    dynamic_models += fetch_custom_api_models()
+    # Custom API models
+    for m in fetch_custom_api_models():
+        if _normalize_model_name(m) in builtin_normalized:
+            dynamic_models.append(f"{_PROVIDER_PREFIX_CUSTOM}{m}")
+        else:
+            dynamic_models.append(m)
 
     # Manual model from sidebar — add it if not already discovered
     custom_model_value = _runtime_config("CUSTOM_API_MODEL")
     custom_base_value = _runtime_config("CUSTOM_API_BASE_URL")
     if custom_base_value and custom_model_value and str(custom_model_value).strip():
         manual = str(custom_model_value).strip()
-        if _normalize_model_name(manual) not in {_normalize_model_name(m) for m in dynamic_models}:
-            dynamic_models.append(manual)
+        manual_normalized = _normalize_model_name(manual)
+        existing_normalized = {_normalize_model_name(m) for m in dynamic_models}
+        if manual_normalized not in existing_normalized:
+            # Check if manual model collides with built-in
+            if manual_normalized in builtin_normalized:
+                dynamic_models.append(f"{_PROVIDER_PREFIX_CUSTOM}{manual}")
+            else:
+                dynamic_models.append(manual)
 
+    # Deduplicate dynamic models while preserving order and preferring prefixed versions
     normalized = {_normalize_model_name(m): m for m in gated_base_models}
     for dm in dynamic_models:
-        key = _normalize_model_name(dm)
-        if key not in normalized:
-            normalized[key] = dm
+        # For prefixed models, use the full prefixed name as the key to avoid collision
+        _, raw_name = _strip_provider_prefix(dm)
+        raw_key = _normalize_model_name(raw_name)
+        # Use the full model string as the unique key if it has a prefix
+        full_key = _normalize_model_name(dm)
+        if full_key not in normalized and raw_key not in normalized:
+            normalized[full_key] = dm
+        elif dm.startswith((_PROVIDER_PREFIX_CUSTOM, _PROVIDER_PREFIX_LLAMA_CPP, _PROVIDER_PREFIX_OLLAMA)):
+            # Prefixed models should always be added as separate entries
+            normalized[full_key] = dm
 
     ordered_dynamic = sorted(
         [name for key, name in normalized.items() if name not in gated_base_models],
@@ -365,8 +413,62 @@ def resolve_model_config(model_choice: str):
     """
     Resolve a model choice (case-insensitive) to the corresponding configuration.
     Supports both the predefined remote models and any locally installed Ollama models.
+    
+    Provider-prefixed model names (e.g., 'custom:gpt-4.1') are routed directly to
+    that provider, bypassing the built-in config lookup.
     """
     model_choice_lower = _normalize_model_name(model_choice)
+    
+    # Check for provider prefix first — this takes precedence over built-in lookup
+    prefix, raw_model = _strip_provider_prefix(model_choice)
+    
+    if prefix == _PROVIDER_PREFIX_CUSTOM:
+        # Route directly to custom API, even if model name matches a built-in
+        custom_base_value = _runtime_config("CUSTOM_API_BASE_URL")
+        if custom_base_value:
+            base = str(custom_base_value).rstrip("/")
+            if not base.lower().endswith("/v1"):
+                base += "/v1"
+            return {
+                "class": ChatOpenAI,
+                "constructor_params": {
+                    "model_name": raw_model,
+                    "base_url": base,
+                    "api_key": _runtime_config("CUSTOM_API_KEY") or "sk-custom",
+                    "streaming": False,
+                },
+            }
+        return None
+    
+    if prefix == _PROVIDER_PREFIX_LLAMA_CPP:
+        # Route directly to llama.cpp
+        llama_base = _runtime_config("LLAMA_CPP_BASE_URL")
+        if llama_base:
+            base = str(llama_base).rstrip("/")
+            if not base.lower().endswith("/v1"):
+                base += "/v1"
+            return {
+                "class": ChatOpenAI,
+                "constructor_params": {
+                    "model_name": raw_model,
+                    "base_url": base,
+                    "api_key": "sk-local",
+                    "streaming": False,
+                },
+            }
+        return None
+    
+    if prefix == _PROVIDER_PREFIX_OLLAMA:
+        # Route directly to Ollama
+        ollama_base = _runtime_config("OLLAMA_BASE_URL")
+        if ollama_base:
+            return {
+                "class": ChatOllama,
+                "constructor_params": {"model": raw_model, "base_url": ollama_base},
+            }
+        return None
+    
+    # No prefix — fall through to built-in lookup, then dynamic discovery
     cfg = _llm_config_map.get(model_choice_lower)
     if cfg:
         # Copy constructor parameters and refresh runtime credentials/URLs. This
@@ -437,35 +539,54 @@ def resolve_model_config(model_choice: str):
 
 
 def get_model_display_names(model_keys: List[str]) -> dict:
-    """Return a display label dict mapping model key -> '[provider] model_key'."""
+    """Return a display label dict mapping model key -> '[provider] model_name'.
+    
+    For provider-prefixed keys (e.g., 'custom:gpt-4.1'), the display shows the
+    raw model name with its provider tag, clearly disambiguating from built-in
+    models with the same name.
+    """
     ollama_set = set(fetch_ollama_models())
     llama_cpp_set = set(fetch_llama_cpp_models())
     custom_set = set(fetch_custom_api_models())
 
     display = {}
     for key in model_keys:
+        # Check for provider prefix first
+        prefix, raw_model = _strip_provider_prefix(key)
+        
+        if prefix == _PROVIDER_PREFIX_CUSTOM:
+            display[key] = f"[custom] {raw_model}"
+            continue
+        if prefix == _PROVIDER_PREFIX_LLAMA_CPP:
+            display[key] = f"[llama.cpp] {raw_model}"
+            continue
+        if prefix == _PROVIDER_PREFIX_OLLAMA:
+            display[key] = f"[ollama] {raw_model}"
+            continue
+        
+        # No prefix — determine provider from config or dynamic sources
         cfg = _llm_config_map.get(_normalize_model_name(key))
         if cfg:
             cls = cfg.get("class")
             ctor = cfg.get("constructor_params", {}) or {}
             base_url = str(ctor.get("base_url", "")).lower()
             if "openrouter" in base_url or "openrouter" in key.lower():
-                prefix = "openrouter"
+                prefix_label = "openrouter"
             elif cls is ChatAnthropic:
-                prefix = "anthropic"
+                prefix_label = "anthropic"
             elif cls is ChatGoogleGenerativeAI:
-                prefix = "google"
+                prefix_label = "google"
             elif cls is ChatOpenAI:
-                prefix = "openai"
+                prefix_label = "openai"
             else:
-                prefix = "other"
+                prefix_label = "other"
         elif key in ollama_set:
-            prefix = "ollama"
+            prefix_label = "ollama"
         elif key in llama_cpp_set:
-            prefix = "llama.cpp"
+            prefix_label = "llama.cpp"
         elif key in custom_set:
-            prefix = "custom"
+            prefix_label = "custom"
         else:
-            prefix = "local"
-        display[key] = f"[{prefix}] {key}"
+            prefix_label = "local"
+        display[key] = f"[{prefix_label}] {key}"
     return display
